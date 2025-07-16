@@ -1,72 +1,57 @@
 import asyncio
 import json
-import cv2
+import argparse
 import firebase_admin
 from firebase_admin import credentials, firestore
 from aiortc import (
     RTCPeerConnection,
     RTCSessionDescription,
     RTCIceCandidate,
-    VideoStreamTrack,
 )
-from aiortc.contrib.media import MediaPlayer
-from aiohttp import web, web_ws
+from aiohttp import web
 import aiohttp_cors
-import av
-import numpy as np
-import threading
-import time
+
+# Importar nuestro módulo de cámaras
+from camera_module import CameraFactory, CameraType, print_camera_info
 
 # Configuración de Firebase
 cred = credentials.Certificate("serviceAccountKey.json")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# Clase para capturar video de la cámara usando OpenCV
-class OpenCVVideoTrack(VideoStreamTrack):
-    """
-    VideoStreamTrack que captura video de la cámara usando OpenCV
-    """
-    
-    def __init__(self, camera_id=0):
-        super().__init__()
-        self.cap = cv2.VideoCapture(camera_id)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        
-    async def recv(self):
-        pts, time_base = await self.next_timestamp()
-        
-        ret, frame = self.cap.read()
-        if not ret:
-            # Si no hay frame, crear uno negro
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        
-        # Convertir BGR a RGB (OpenCV usa BGR por defecto)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Asegurar que el frame sea del tipo correcto
-        frame = np.asarray(frame, dtype=np.uint8)
-        
-        # Crear frame de PyAV
-        av_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
-        av_frame.pts = pts
-        av_frame.time_base = time_base
-        
-        return av_frame
-    
-    def __del__(self):
-        if hasattr(self, 'cap') and self.cap.isOpened():
-            self.cap.release()
-
 # Almacenar conexiones WebRTC activas
 pcs = set()
+
+# Configuración global de cámara
+camera_config = {
+    "type": CameraType.AUTO,
+    "camera_id": 0,
+    "width": 640,
+    "height": 480,
+    "fps": 30
+}
 
 async def index(request):
     """Página principal con el cliente WebRTC"""
     content = open('index.html', 'r').read()
     return web.Response(content_type='text/html', text=content)
+
+async def camera_info(request):
+    """Endpoint para obtener información de las cámaras"""
+    from camera_module import CameraDetector, PICAMERA_AVAILABLE
+    
+    info = {
+        "platform": CameraDetector.detect_platform(),
+        "picamera_available": PICAMERA_AVAILABLE,
+        "recommended_camera": CameraDetector.get_best_camera_type(),
+        "available_cameras": CameraDetector.list_available_cameras(),
+        "current_config": camera_config
+    }
+    
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps(info, indent=2)
+    )
 
 async def offer(request):
     """Endpoint para manejar ofertas WebRTC"""
@@ -77,9 +62,37 @@ async def offer(request):
     pc = RTCPeerConnection()
     pcs.add(pc)
     
-    # Añadir track de video de la cámara
-    video_track = OpenCVVideoTrack()
-    pc.addTrack(video_track)
+    # Crear track de video usando el factory
+    try:
+        video_track = CameraFactory.create_video_track(
+            camera_type=camera_config["type"],
+            camera_id=camera_config["camera_id"],
+            width=camera_config["width"],
+            height=camera_config["height"],
+            fps=camera_config["fps"]
+        )
+        pc.addTrack(video_track)
+        print(f"✅ Video track añadido: {camera_config['type']}")
+    except Exception as e:
+        print(f"❌ Error creando video track: {e}")
+        # Intentar con OpenCV como fallback
+        try:
+            video_track = CameraFactory.create_video_track(
+                camera_type=CameraType.OPENCV,
+                camera_id=0,
+                width=640,
+                height=480,
+                fps=30
+            )
+            pc.addTrack(video_track)
+            print("⚠️  Usando OpenCV como fallback")
+        except Exception as e2:
+            print(f"❌ Error con fallback: {e2}")
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"error": "No se pudo inicializar la cámara"}),
+                status=500
+            )
     
     # Manejar cierre de conexión
     @pc.on("connectionstatechange")
@@ -132,6 +145,7 @@ async def init_app():
     # Rutas
     app.router.add_get("/", index)
     app.router.add_post("/offer", offer)
+    app.router.add_get("/camera-info", camera_info)
     app.router.add_static('/', path='.', name='static')
     
     # Añadir CORS a todas las rutas
@@ -140,8 +154,78 @@ async def init_app():
     
     return app
 
+def parse_arguments():
+    """Parsear argumentos de línea de comandos"""
+    parser = argparse.ArgumentParser(description='Servidor WebRTC con soporte para múltiples cámaras')
+    
+    parser.add_argument('--camera-type', 
+                       choices=['auto', 'opencv', 'picamera2'], 
+                       default='auto',
+                       help='Tipo de cámara a usar (default: auto)')
+    
+    parser.add_argument('--camera-id', 
+                       type=int, 
+                       default=0,
+                       help='ID de la cámara OpenCV (default: 0)')
+    
+    parser.add_argument('--width', 
+                       type=int, 
+                       default=640,
+                       help='Ancho del video (default: 640)')
+    
+    parser.add_argument('--height', 
+                       type=int, 
+                       default=480,
+                       help='Alto del video (default: 480)')
+    
+    parser.add_argument('--fps', 
+                       type=int, 
+                       default=30,
+                       help='Frames por segundo (default: 30)')
+    
+    parser.add_argument('--port', 
+                       type=int, 
+                       default=8080,
+                       help='Puerto del servidor (default: 8080)')
+    
+    parser.add_argument('--host', 
+                       default='localhost',
+                       help='Host del servidor (default: localhost)')
+    
+    parser.add_argument('--info', 
+                       action='store_true',
+                       help='Mostrar información de cámaras y salir')
+    
+    return parser.parse_args()
+
 async def main():
     """Función principal"""
+    global camera_config
+    
+    args = parse_arguments()
+    
+    # Mostrar información si se solicita
+    if args.info:
+        print_camera_info()
+        return
+    
+    # Configurar cámara según argumentos
+    camera_config.update({
+        "type": getattr(CameraType, args.camera_type.upper()),
+        "camera_id": args.camera_id,
+        "width": args.width,
+        "height": args.height,
+        "fps": args.fps
+    })
+    
+    print("🚀 Iniciando servidor WebRTC...")
+    print_camera_info()
+    print(f"\n⚙️  Configuración:")
+    print(f"  - Tipo de cámara: {args.camera_type}")
+    print(f"  - Resolución: {args.width}x{args.height}")
+    print(f"  - FPS: {args.fps}")
+    print(f"  - Servidor: http://{args.host}:{args.port}")
+    
     app = await init_app()
     runner = None
     
@@ -149,8 +233,8 @@ async def main():
     try:
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "localhost", 8080)
-        print("🚀 Servidor iniciado en http://localhost:8080")
+        site = web.TCPSite(runner, args.host, args.port)
+        print(f"\n✅ Servidor iniciado en http://{args.host}:{args.port}")
         print("📹 Presiona Ctrl+C para detener")
         await site.start()
         

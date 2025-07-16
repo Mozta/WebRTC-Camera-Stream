@@ -1,0 +1,12 @@
+# Dependencias base (para todas las plataformas)
+aiortc>=1.6.0
+aiohttp>=3.8.0
+aiohttp-cors>=0.7.0
+opencv-python>=4.8.0
+firebase-admin>=6.0.0
+numpy>=1.24.0
+av>=10.0.0
+
+# Dependencias específicas para Raspberry Pi
+# Instalar solo en Raspberry Pi:
+# pip install picamera2

@@ -107,6 +107,10 @@
         <div class="info">
             <strong>Instrucciones:</strong> Haz clic en "Iniciar Stream" para comenzar a transmitir video desde tu
             cámara usando WebRTC.
+            <br><br>
+            <div id="cameraInfo" style="font-size: 0.9em; color: #666;">
+                <em>Cargando información de cámara...</em>
+            </div>
         </div>
 
         <div class="controls">
@@ -253,12 +257,37 @@
         startBtn.addEventListener('click', startStream);
         stopBtn.addEventListener('click', stopStream);
 
+        // Función para cargar información de la cámara
+        async function loadCameraInfo() {
+            try {
+                const response = await fetch('/camera-info');
+                const info = await response.json();
+                
+                const cameraInfoDiv = document.getElementById('cameraInfo');
+                cameraInfoDiv.innerHTML = `
+                    <strong>📊 Información del sistema:</strong><br>
+                    • Plataforma: ${info.platform}<br>
+                    • Cámara recomendada: ${info.recommended_camera}<br>
+                    • PiCamera2 disponible: ${info.picamera_available ? '✅' : '❌'}<br>
+                    • Resolución actual: ${info.current_config.width}x${info.current_config.height}<br>
+                    • Cámaras detectadas: ${info.available_cameras.length > 0 ? info.available_cameras.join(', ') : 'Ninguna'}
+                `;
+            } catch (error) {
+                console.error('Error cargando info de cámara:', error);
+                document.getElementById('cameraInfo').innerHTML = 
+                    '<em style="color: #e74c3c;">Error cargando información de cámara</em>';
+            }
+        }
+
         // Limpiar al cerrar la página
         window.addEventListener('beforeunload', () => {
             if (pc) {
                 pc.close();
             }
         });
+
+        // Cargar información de cámara al iniciar
+        loadCameraInfo();
 
         console.log('🚀 Cliente WebRTC inicializado');
     </script>
